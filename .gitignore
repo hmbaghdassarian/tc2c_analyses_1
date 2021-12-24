@@ -1,0 +1,14 @@
+**/*.rds
+**/*.csv
+**/*.pdf
+**/*.png
+**/*.tab
+
+.RData
+.Rhistory
+**/*.ipynb_checkpoints
+**/*.h5a
+**/*__pycache__/*
+**/*.pickle
+**/*.svg
+
