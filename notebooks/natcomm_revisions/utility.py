@@ -54,7 +54,7 @@ def get_hierarchical_clusters(X: pd.DataFrame, height: float,
     
     Parameters
     ----------
-    X : Union[np.ndarray, pd.DataFrame]
+    X : pd.DataFrame
         Index is the LR pairs. Should be the factor loadings or a factor specific 
         joint distribution
     height : float
@@ -81,3 +81,59 @@ def get_hierarchical_clusters(X: pd.DataFrame, height: float,
     clusters = dict(zip(X.index, cluster_labels))
     
     return clusters
+
+from typing import Dict, List
+import pandas as pd
+from scipy.stats import hypergeom 
+import statsmodels as sm
+def loading_ora(lr_loadings: pd.Series, 
+                lr_functions: Dict[str, List[str]],
+                percentile: float = 0.9) -> pd.DataFrame:
+    """Use an LR factor loading vector for over-representation analysis
+
+    Parameters
+    ----------
+    lr_loadings : pd.Series
+        a factors LR loadings; index is the LR pair, value is the loading 
+    lr_functions : Dict[str, List[str]]
+        value is the meta-term (e.g., signalling pathway)
+        key is the list of LR pairs associated with the meta-term
+    percentile: float, optional
+        the top q-percentile loadings to consider, by default 0.9
+    background : str, optional [DEPRECATED]
+        the background genes to be considered, by default 'loadings' 
+        Either 'loadings' for all LR pairs in the lr_loadings vector or 
+        'universe' for all pairs in lr_functions
+
+    Returns
+    -------
+    ora_res : pd.DataFrame
+        summarizes over-representation analysis results for each term
+    """
+    background = 'universe'
+    background = sorted(set([item for sublist in lr_functions.values() for item in sublist]))
+#     if background == 'loadings':
+#         background = lr_loadings.index.tolist()
+#     elif background == 'universe':
+#         background = sorted(set([item for sublist in lr_functions.values() for item in sublist]))
+#     else: 
+#         raise ValueError("Background must be on of ['loadings', 'universe']")
+    
+    lr_loadings = lr_loadings.sort_values(ascending = False)
+    top_n = lr_loadings[lr_loadings >= lr_loadings.quantile(q = percentile)]
+    
+    
+    ora_res = pd.DataFrame(columns = ['Term', 'Gene Ratio', 'BG Ratio', 'p_val'], 
+                          index = range(len(lr_functions)))
+    N = len(background)
+    n = top_n.shape[0]
+    for idx, meta_term in enumerate(lr_functions):
+        M = len(lr_functions[meta_term]) # K 
+        k = len(set(lr_functions[meta_term]).intersection(top_n.index))
+        
+        p_enrich = hypergeom.pmf(k,N,M,n) # TODO: make sure this is correct
+        ora_res.loc[idx, :] = [meta_term, k/n, M/N, p_enrich]
+        
+    ora_res['BH_FDR'] = sm.stats.multitest.multipletests(pvals=ora_res.p_val, method='fdr_bh')[1]
+    return ora_res
+    
