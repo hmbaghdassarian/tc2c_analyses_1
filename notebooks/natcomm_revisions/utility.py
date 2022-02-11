@@ -136,4 +136,87 @@ def loading_ora(lr_loadings: pd.Series,
         
     ora_res['BH_FDR'] = sm.stats.multitest.multipletests(pvals=ora_res.p_val, method='fdr_bh')[1]
     return ora_res
+
+
+# going from a communication matrix (sender-receiver columns x ligand&receptor pairs) to a communication tensor
+from typing import Dict
+import pandas as pd
+from tqdm import tqdm
+import tensorly as tl
+from cell2cell.tensor import PreBuiltTensor
+
+def _lr_to_matrix(df, lr_pair, cp_delim='-', lr_delim='&'):
+    '''Convert a row of a communication matrix to a slice of the 3D tensor'''
+    slice_df = pd.DataFrame(df.loc[lr_pair, :])
+    slice_df = pd.concat([pd.Series(slice_df.index).str.split(cp_delim, expand = True),slice_df.reset_index(drop = True)], 
+             axis = 1) 
+    slice_df = slice_df.pivot(index = 0, columns=1).values
+    
+    return slice_df
+
+def _matrix_to_3d_tensor(df, cp_delim='-', lr_delim='&'):
+    """Reformat from CC-LR pair to 3D tensor
+    
+    df: pd.DataFrame
+        columns are sender-receiver cell pairs, separated by '-'
+        index is ligand-receptor pairs, separated by '&'
+    """
+    tensor_3d = np.dstack([_lr_to_matrix(df=df, lr_pair=lr_pair, cp_delim=cp_delim, lr_delim=lr_delim) for lr_pair in df.index])
+    return tensor_3d
+
+def _create_nan_vals(scores: Dict[str, pd.DataFrame], cp_delim: str='-'):
+    """Gets union of all cell-cell and LR pairs analyzed"""
+    lr_pairs = [df.index.tolist() for df in scores.values()]
+    lr_pairs = sorted({item for sublist in lr_pairs for item in sublist})
+    
+    cell_pairs = [df.columns.tolist() for df in scores.values()]
+    cell_pairs = sorted({item for sublist in cell_pairs for item in sublist})
+    
+    scores_new = {}
+    for context, df in scores.items():
+        df = pd.concat([df, pd.DataFrame(index = set(lr_pairs).difference(df.index),columns = df.columns)])
+        for col in set(cell_pairs).difference(df.columns):
+            df[col] = float('nan')
+
+        df = df.loc[lr_pairs, cell_pairs] # make the order the same
+        scores_new[context] = df
+    
+    cell_order = pd.Series(cell_pairs).str.split(cp_delim, expand = True).pivot(index = 0, columns=1).index.tolist()
+    return scores_new, cell_order, lr_pairs
+
+def matrix_to_interaction_tensor(scores: Dict[str, pd.DataFrame], how='outer', cp_delim='-', lr_delim='&'):
+    """Combine communication matrices from multiple contexts into a singular communication tensor. 
+    
+    scores : Dict[str, pd.DataFrame]
+        values are the context label, keys are the cell-cell communication matrix
+        matrix columns are sender-receiver cell pairs, matrix rows are ligand&receptor cell pairs, and entries are the non-negative communication score
+    union : bool
+        whether to take union of LR and CC pairs across contexts
+    """
+    if how == 'outer':
+        scores, cell_order, lr_order = _create_nan_vals(scores, cp_delim=cp_delim)
+    else: 
+        raise ValueError('Need to inner')
+    
+    context_order = list()
+    for context, df in tqdm(scores.items()):
+        scores[context] = _matrix_to_3d_tensor(df=df, cp_delim=cp_delim, lr_delim=lr_delim)
+        context_order.append(context)
+    
+    # sender, receiver, lr, context
+    tensor_4d = np.stack(scores.values(), axis = -1)
+                        
+    if how == 'outer':
+        mask = (~np.isnan(np.asarray(tensor_4d))).astype(int)
+    else:
+        mask = None
+    
+    tensor = PreBuiltTensor(tensor = tensor_4d, 
+                         order_names=[cell_order, cell_order, lr_order, context_order], 
+                         order_labels=['Sender Cells', 'Receiver Cells', 
+                                       'Ligand-Receptor Pairs', 'Samples/Contexts'], 
+                         mask = mask)
+    
+    
+    return tensor
     
