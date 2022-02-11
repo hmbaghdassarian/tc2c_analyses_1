@@ -140,83 +140,147 @@ def loading_ora(lr_loadings: pd.Series,
 
 # going from a communication matrix (sender-receiver columns x ligand&receptor pairs) to a communication tensor
 from typing import Dict
+from collections import OrderedDict
 import pandas as pd
 from tqdm import tqdm
 import tensorly as tl
 from cell2cell.tensor import PreBuiltTensor
 
-def _lr_to_matrix(df, lr_pair, cp_delim='-', lr_delim='&'):
+def _lr_to_matrix(df, lr_pair, cell_delim='-', lr_delim='&'):
     '''Convert a row of a communication matrix to a slice of the 3D tensor'''
     slice_df = pd.DataFrame(df.loc[lr_pair, :])
-    slice_df = pd.concat([pd.Series(slice_df.index).str.split(cp_delim, expand = True),slice_df.reset_index(drop = True)], 
+    slice_df = pd.concat([pd.Series(slice_df.index).str.split(cell_delim, expand = True),slice_df.reset_index(drop = True)], 
              axis = 1) 
     slice_df = slice_df.pivot(index = 0, columns=1).values
     
     return slice_df
 
-def _matrix_to_3d_tensor(df, cp_delim='-', lr_delim='&'):
+def _matrix_to_3d_tensor(df, cell_delim='-', lr_delim='&'):
     """Reformat from CC-LR pair to 3D tensor
     
     df: pd.DataFrame
         columns are sender-receiver cell pairs, separated by '-'
         index is ligand-receptor pairs, separated by '&'
     """
-    tensor_3d = np.dstack([_lr_to_matrix(df=df, lr_pair=lr_pair, cp_delim=cp_delim, lr_delim=lr_delim) for lr_pair in df.index])
+    tensor_3d = np.dstack([_lr_to_matrix(df=df, lr_pair=lr_pair, cell_delim=cell_delim, lr_delim=lr_delim) for lr_pair in df.index])
     return tensor_3d
 
-def _create_nan_vals(scores: Dict[str, pd.DataFrame], cp_delim: str='-'):
-    """Gets union of all cell-cell and LR pairs analyzed"""
-    lr_pairs = [df.index.tolist() for df in scores.values()]
-    lr_pairs = sorted({item for sublist in lr_pairs for item in sublist})
-    
-    cell_pairs = [df.columns.tolist() for df in scores.values()]
-    cell_pairs = sorted({item for sublist in cell_pairs for item in sublist})
-    
-    scores_new = {}
-    for context, df in scores.items():
-        df = pd.concat([df, pd.DataFrame(index = set(lr_pairs).difference(df.index),columns = df.columns)])
-        for col in set(cell_pairs).difference(df.columns):
-            df[col] = float('nan')
+# replace lines 756-776 in c2c.tensor.tensor (since used by multiple functions)
+def get_cells_and_lrs(df_list: List, lr_how: str = 'outer', cell_how: str ='outer'):
+    """Generate a comprehensive list of LR pairs and cells (or cell pairs) from a list of dataframes.
+    Deals with inconsistencies in indeces across context-specific matrices. 
 
-        df = df.loc[lr_pairs, cell_pairs] # make the order the same
-        scores_new[context] = df
-    
-    cell_order = pd.Series(cell_pairs).str.split(cp_delim, expand = True).pivot(index = 0, columns=1).index.tolist()
-    return scores_new, cell_order, lr_pairs
+    Parameters
+    ----------
+    df_list : List
+        a list of expression or communication matrices, each corresponding to a different 
+    lr_how : str, optional
+        take the union (outer) or intersection ('inner') of all matrix row names, by default 'outer'
+    cell_how : str, optional
+        take the union (outer) or intersection ('inner') of all matrix column names, by default 'outer'
 
-def matrix_to_interaction_tensor(scores: Dict[str, pd.DataFrame], how='outer', cp_delim='-', lr_delim='&'):
-    """Combine communication matrices from multiple contexts into a singular communication tensor. 
-    
-    scores : Dict[str, pd.DataFrame]
-        values are the context label, keys are the cell-cell communication matrix
-        matrix columns are sender-receiver cell pairs, matrix rows are ligand&receptor cell pairs, and entries are the non-negative communication score
-    union : bool
-        whether to take union of LR and CC pairs across contexts
+    Returns
+    -------
+    [type]
+        [description]
     """
-    if how == 'outer':
-        scores, cell_order, lr_order = _create_nan_vals(scores, cp_delim=cp_delim)
-    else: 
-        raise ValueError('Need to inner')
+    df_idxs = [list(df.index) for df in df_list]
+    df_cols = [list(df.columns) for df in df_list]
+    
+    if lr_how == 'outer':
+        lr_pairs = set.union(*map(set, df_idxs))
+    elif lr_how == 'inner':
+        lr_pairs = set.intersection(*map(set, df_idxs))
+    
+    if cell_how == 'outer':
+        cells = set.union(*map(set, df_cols))
+    elif lr_how == 'inner':
+        cells = set.intersection(*map(set, df_cols))
+        
+    # Preserve order or sort new set (either inner or outer)
+    if set(df_idxs[0]) == lr_pairs:
+        lr_pairs = df_idxs[0]
+    else:
+        lr_pairs = sorted(lr_pairs)
+
+    if set(df_cols[0]) == cells:
+        cells = df_cols[0]
+    else:
+        cells = sorted(cells)
+    
+    return lr_pairs, cells
+
+def matrix_to_interaction_tensor(scores: Dict[str, pd.DataFrame], 
+                                 cell_delim: str = '-', lr_delim: str = '&', 
+                                lr_how: str = 'outer', lr_fill: float = float('nan'),
+                                cell_how: str = 'outer', cell_fill: float =0,
+                                prioritize_lr_fill: bool = True):
+    """Combine communication matrices from multiple contexts into an interaction tensor.
+    
+    *Note on 'outer' filling: When taking the union across context-specific matrices, any missing LR or cell pair indicates that this was measured
+    in atleast one other context. By default, we treat missing LR pairs as NaN (e.g., missing due to technical limitations) and missing cell pairs
+    as 0 (e.g., missing due to being biologically zero). 
+
+    Parameters
+    ----------
+    scores : Dict[str, pd.DataFrame]
+        values are the context label, keys are the cell-cell communication matrix for that context
+        matrix columns are sender-receiver cell pairs, matrix rows are ligand&receptor cell pairs, and entries are the non-negative communication score
+    cell_delim : str, optional
+       delimiter that separates two cell types in the cell type pair for the matrix columns, by default '-'
+    lr_delim : str, optional
+        delimiter that separates ligands and receptors in the ligand-receptor pair for the matrix indeces, by default '&'
+    lr_how : str, optional
+        each matrix will contain the union (outer) or intersection ('inner') of all matrix row names, by default 'outer'
+    lr_fill : float, optional
+        value to fill in missing LR indices with, by default float('nan')
+        decomposition will treat NaN as missing (impute or ignore depending on algorithm) and 0 as true biological 0s
+        only applicble when lr_how = 'outer'
+    cell_how: str, optional
+        each matrix will contain the union (outer) or intersection ('inner') of all matrix column names, by default 'outer'
+    cell_fill : float, optional
+        value to fill in missing cell pair indices with, by default 0
+        decomposition will treat NaN as missing (impute or ignore depending on algorithm) and 0 as true biological 0s
+        only applicble when cell_how = 'outer'
+    prioritize_lr_fill : bool, optional
+        prioritize lr_fill (True) or cell_fill (False) value, by default True
+        only applicable when cell_how = 'outer', lr_how = 'outer', lf_fill != cell_fill, and the matrix is missing both the cell-cell and LR pair
+
+    Returns
+    -------
+    [type]
+        [description]
+    """
+    scores=OrderedDict(scores)
+    lr_pairs, cell_pairs = get_cells_and_lrs(df_list = scores.values(), lr_how=lr_how, cell_how=cell_how)
+    cell_order = pd.Series(cell_pairs).str.split(cell_delim, expand = True).pivot(index = 0, columns=1).index.tolist()
+    
+    if prioritize_lr_fill:
+        for context, df in scores.items():
+            scores[context] = df=df.reindex(lr_pairs, fill_value=lr_fill).reindex(cell_pairs, fill_value=cell_fill, axis='columns')
+    else:
+        for context, df in scores.items():
+            scores[context] = df=df.reindex(lr_pairs, fill_value=lr_fill).reindex(cell_pairs, fill_value=cell_fill, axis='columns')
     
     context_order = list()
     for context, df in tqdm(scores.items()):
-        scores[context] = _matrix_to_3d_tensor(df=df, cp_delim=cp_delim, lr_delim=lr_delim)
+        scores[context] = _matrix_to_3d_tensor(df=df, cell_delim=cell_delim, lr_delim=lr_delim)
         context_order.append(context)
     
     # sender, receiver, lr, context
     tensor_4d = np.stack(scores.values(), axis = -1)
                         
-    if how == 'outer':
+    if (lr_how == 'outer' and lr_fill == float('nan')) or (cell_how == 'outer' and cell_fill == float('nan')):
         mask = (~np.isnan(np.asarray(tensor_4d))).astype(int)
     else:
         mask = None
     
     tensor = PreBuiltTensor(tensor = tensor_4d, 
-                         order_names=[cell_order, cell_order, lr_order, context_order], 
+                         order_names=[cell_order, cell_order, lr_pairs, context_order], 
                          order_labels=['Sender Cells', 'Receiver Cells', 
                                        'Ligand-Receptor Pairs', 'Samples/Contexts'], 
                          mask = mask)
-    
-    
+
     return tensor
-    
+
+
