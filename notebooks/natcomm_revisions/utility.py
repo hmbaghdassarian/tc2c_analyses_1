@@ -248,8 +248,8 @@ def matrix_to_interaction_tensor(scores: Dict[str, pd.DataFrame],
 
     Returns
     -------
-    [type]
-        [description]
+    tensor : PreBuiltTensor
+        interaction tensor restructured from scores' communication matrices 
     """
     scores=OrderedDict(scores)
     lr_pairs, cell_pairs = get_cells_and_lrs(df_list = scores.values(), lr_how=lr_how, cell_how=cell_how)
@@ -283,4 +283,61 @@ def matrix_to_interaction_tensor(scores: Dict[str, pd.DataFrame],
 
     return tensor
 
+def edgelist_to_communication_matrix(edge_file: str, 
+                                     score_col: str, 
+                                     sender_cell_col: str, receiver_cell_col: str,
+                                     ligand_col: str, receptor_col: str,
+                                     cell_delim: str = '-', lr_delim: str = '&'):
+    """Converts an edge list of cell-cell communication scores for LR pairs into a communication matrix with columns as (Sender-Receiver) pairs and rows as (Ligand&Receptor) pairs
 
+    Parameters
+    ----------
+    edge_file : str
+        full/path/to/edgelist.csv
+        edge list should contain a communication score for each cell-cell and each LR pair
+    score_col : str
+        name of column containing communication scores
+    sender_cell_col : str
+        name of column containing sender cell ID
+    receiver_cell_col : str
+        name of column containing receiver cell ID
+    ligand_col : str
+        name of column containing ligand ID
+    receptor_col : str
+        name of column containing receptor ID
+    cell_delim : str, optional
+        delimiter by which to join sender<DELIM>receiver cell IDs, by default '-'
+    lr_delim : str, optional
+        delimiter by which to join ligand<DELIM>receptor gene IDs, by default '&'
+
+    Returns
+    -------
+    cm : pd.DataFrame
+        communication matrix with columns as (Sender-Receiver) cell pairs and rows as (Ligand&Receptor) gene pairs
+    """
+    
+    cm = pd.read_csv(edge_file)
+    cm[cell_delim.join(['Sender, Receiver'])] = cm[[sender_cell_col, receiver_cell_col]].agg(cell_delim.join, axis=1)
+    cm[lr_delim.join(['Ligand, Receptor'])] = cm[[ligand_col, receptor_col]].agg(lr_delim.join, axis=1)
+    cm = cm.loc[:, [cell_delim.join(['Sender, Receiver']), lr_delim.join(['Ligand, Receptor']), score_col]] 
+                     
+    cm = cm.pivot(index = cell_delim.join(['Sender, Receiver']), columns = lr_delim.join(['Ligand, Receptor']), values=score_col).T
+    return cm
+    
+def natmi_edgelist_to_communication_matrix(edge_file: str, cell_delim: str = '-', lr_delim: str = '&', 
+                                           score_col: str = 'Edge average expression weight'):
+    """Converts Edges_xx.csv output to communication matrix format.
+     
+    See edgelist_to_communication_matrix for full description of parameters
+    """
+    cm = edgelist_to_communication_matrix(edge_file=edge_file, 
+                                          score_col=score_col,
+                                         sender_cell_col='Sending cluster', receiver_cell_col='Target cluster',
+                                          ligand_col='Ligand symbol', receptor_col='Receptor symbol', 
+                                          cell_delim=cell_delim, lr_delim=lr_delim
+                                         )
+    cm.dropna(axis = 1, how = 'all', inplace = True) # if a cell type was not measured
+    cm.dropna(axis = 0, how = 'all', inplace = True) # if an LR was not measured
+    cm.fillna(0, inplace = True) # all other missing values were scored 0
+    
+    return cm
