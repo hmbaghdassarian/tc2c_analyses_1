@@ -194,7 +194,7 @@ def get_cells_and_lrs(df_list: List, lr_how: str = 'outer', cell_how: str ='oute
     
     if cell_how == 'outer':
         cells = set.union(*map(set, df_cols))
-    elif lr_how == 'inner':
+    elif cell_how == 'inner':
         cells = set.intersection(*map(set, df_cols))
         
     # Preserve order or sort new set (either inner or outer)
