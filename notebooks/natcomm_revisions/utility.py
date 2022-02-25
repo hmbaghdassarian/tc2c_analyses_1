@@ -139,7 +139,7 @@ def loading_ora(lr_loadings: pd.Series,
 
 
 # going from a communication matrix (sender-receiver columns x ligand&receptor pairs) to a communication tensor
-from typing import Dict
+from typing import Dict, List
 from collections import OrderedDict
 import pandas as pd
 from tqdm import tqdm
@@ -162,7 +162,7 @@ def _matrix_to_3d_tensor(df, cell_delim='-', lr_delim='&'):
         columns are sender-receiver cell pairs, separated by '-'
         index is ligand-receptor pairs, separated by '&'
     """
-    tensor_3d = np.dstack([_lr_to_matrix(df=df, lr_pair=lr_pair, cell_delim=cell_delim, lr_delim=lr_delim) for lr_pair in df.index])
+    tensor_3d = np.stack([_lr_to_matrix(df=df, lr_pair=lr_pair, cell_delim=cell_delim, lr_delim=lr_delim) for lr_pair in df.index])
     return tensor_3d
 
 # replace lines 756-776 in c2c.tensor.tensor (since used by multiple functions)
@@ -257,10 +257,10 @@ def matrix_to_interaction_tensor(scores: Dict[str, pd.DataFrame],
     
     if prioritize_lr_fill:
         for context, df in scores.items():
-            scores[context] = df=df.reindex(lr_pairs, fill_value=lr_fill).reindex(cell_pairs, fill_value=cell_fill, axis='columns')
+            scores[context] = df.reindex(lr_pairs, fill_value=lr_fill).reindex(cell_pairs, fill_value=cell_fill, axis='columns')
     else:
         for context, df in scores.items():
-            scores[context] = df=df.reindex(lr_pairs, fill_value=lr_fill).reindex(cell_pairs, fill_value=cell_fill, axis='columns')
+            scores[context] = df.reindex(lr_pairs, fill_value=lr_fill).reindex(cell_pairs, fill_value=cell_fill, axis='columns')
     
     context_order = list()
     for context, df in tqdm(scores.items()):
@@ -268,7 +268,7 @@ def matrix_to_interaction_tensor(scores: Dict[str, pd.DataFrame],
         context_order.append(context)
     
     # sender, receiver, lr, context
-    tensor_4d = np.stack(scores.values(), axis = -1)
+    tensor_4d = np.stack(scores.values())
                         
     if (lr_how == 'outer' and lr_fill == float('nan')) or (cell_how == 'outer' and cell_fill == float('nan')):
         mask = (~np.isnan(np.asarray(tensor_4d))).astype(int)
@@ -276,12 +276,37 @@ def matrix_to_interaction_tensor(scores: Dict[str, pd.DataFrame],
         mask = None
     
     tensor = PreBuiltTensor(tensor = tensor_4d, 
-                         order_names=[cell_order, cell_order, lr_pairs, context_order], 
-                         order_labels=['Sender Cells', 'Receiver Cells', 
-                                       'Ligand-Receptor Pairs', 'Samples/Contexts'], 
+                         order_names=[context_order, lr_pairs, cell_order, cell_order], 
+                         order_labels=['Samples/Contexts', 'Ligand-Receptor Pairs', 
+                                      'Sender Cells', 'Receiver Cells'], 
                          mask = mask)
 
     return tensor
+
+from numpy.testing import assert_almost_equal
+def test_matrix_to_interaction_tensor(scores, **kwargs):
+    
+    tensor = matrix_to_interaction_tensor(scores, **kwargs)
+    
+    correct_score = False
+    dims = tensor.tensor.shape
+    while not correct_score: # ensures non Nan/0
+        context_index = np.random.randint(0, dims[0])
+        lr_index = np.random.randint(0, dims[1])
+        sender_index = np.random.randint(0, dims[2])
+        receiver_index = np.random.randint(0, dims[3])
+
+        context_name = tensor.order_names[0][context_index]
+        lr_name = tensor.order_names[1][lr_index]
+        sender_name = tensor.order_names[2][sender_index]
+        receiver_name = tensor.order_names[3][receiver_index]
+
+        tensor_score = tensor.tensor[(context_index, lr_index, sender_index, receiver_index)]
+        if not (tensor_score == 0 or np.isnan(tensor_score)):
+            correct_score = True
+
+    assert_almost_equal(tensor_score, 
+                  scores[context_name].loc[lr_name, cell_delim.join([sender_name, receiver_name])])
 
 def edgelist_to_communication_matrix(edge_list: pd.DataFrame, 
                                      score_col: str, 
