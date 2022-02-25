@@ -138,15 +138,17 @@ def loading_ora(lr_loadings: pd.Series,
     return ora_res
 
 
-# going from a communication matrix (sender-receiver columns x ligand&receptor pairs) to a communication tensor
-from typing import Dict, List
+# going from a communication edge list (LR, CC, score) or matrix (sender-receiver columns x ligand^receptor pairs) to a communication tensor
+from typing import Dict, List, Optional
 from collections import OrderedDict
+from numpy.testing import assert_almost_equal
+import warnings
 import pandas as pd
 from tqdm import tqdm
 import tensorly as tl
 from cell2cell.tensor import PreBuiltTensor
 
-def _lr_to_matrix(df, lr_pair, cell_delim='-', lr_delim='&'):
+def _lr_to_matrix(df, lr_pair, cell_delim='-', lr_delim='^'):
     '''Convert a row of a communication matrix to a slice of the 3D tensor'''
     slice_df = pd.DataFrame(df.loc[lr_pair, :])
     slice_df = pd.concat([pd.Series(slice_df.index).str.split(cell_delim, expand = True),slice_df.reset_index(drop = True)], 
@@ -155,12 +157,12 @@ def _lr_to_matrix(df, lr_pair, cell_delim='-', lr_delim='&'):
     
     return slice_df
 
-def _matrix_to_3d_tensor(df, cell_delim='-', lr_delim='&'):
+def _matrix_to_3d_tensor(df, cell_delim='-', lr_delim='^'):
     """Reformat from CC-LR pair to 3D tensor
     
     df: pd.DataFrame
         columns are sender-receiver cell pairs, separated by '-'
-        index is ligand-receptor pairs, separated by '&'
+        index is ligand-receptor pairs, separated by '^'
     """
     tensor_3d = np.stack([_lr_to_matrix(df=df, lr_pair=lr_pair, cell_delim=cell_delim, lr_delim=lr_delim) for lr_pair in df.index])
     return tensor_3d
@@ -211,7 +213,7 @@ def get_cells_and_lrs(df_list: List, lr_how: str = 'outer', cell_how: str ='oute
     return lr_pairs, cells
 
 def matrix_to_interaction_tensor(scores: Dict[str, pd.DataFrame], 
-                                 cell_delim: str = '-', lr_delim: str = '&', 
+                                 cell_delim: str = '-', lr_delim: str = '^', 
                                 lr_how: str = 'outer', lr_fill: float = float('nan'),
                                 cell_how: str = 'outer', cell_fill: float = 0,
                                 prioritize_lr_fill: bool = True):
@@ -229,7 +231,7 @@ def matrix_to_interaction_tensor(scores: Dict[str, pd.DataFrame],
     cell_delim : str, optional
        delimiter that separates two cell types in the cell type pair for the matrix columns, by default '-'
     lr_delim : str, optional
-        delimiter that separates ligands and receptors in the ligand-receptor pair for the matrix indeces, by default '&'
+        delimiter that separates ligands and receptors in the ligand-receptor pair for the matrix indeces, by default '^'
     lr_how : str, optional
         each matrix will contain the union (outer) or intersection ('inner') of all matrix row names, by default 'outer'
     lr_fill : float, optional
@@ -283,7 +285,6 @@ def matrix_to_interaction_tensor(scores: Dict[str, pd.DataFrame],
 
     return tensor
 
-from numpy.testing import assert_almost_equal
 def test_matrix_to_interaction_tensor(scores, **kwargs):
     
     tensor = matrix_to_interaction_tensor(scores, **kwargs)
@@ -312,7 +313,8 @@ def edgelist_to_communication_matrix(edge_list: pd.DataFrame,
                                      score_col: str, 
                                      sender_cell_col: str, receiver_cell_col: str,
                                      ligand_col: str, receptor_col: str,
-                                     cell_delim: str = '-', lr_delim: str = '&'):
+                                     cell_delim: str = '-', lr_delim: str = '^', 
+                                    fillna_val: float = 0.0):
     """Converts an edge list of cell-cell communication scores for LR pairs into a communication matrix with columns as (Sender-Receiver) pairs and rows as (Ligand&Receptor) pairs
 
     Parameters
@@ -332,12 +334,19 @@ def edgelist_to_communication_matrix(edge_list: pd.DataFrame,
     cell_delim : str, optional
         delimiter by which to join sender<DELIM>receiver cell IDs, by default '-'
     lr_delim : str, optional
-        delimiter by which to join ligand<DELIM>receptor gene IDs, by default '&'
+        delimiter by which to join ligand<DELIM>receptor gene IDs, by default '^'
+    fillna_val : float, optional
+        value to fill NA in the communication matrix, by default 0.0
+        set to None or float('nan') to avoid filling
+        in their output edge list, many communication scoring tools will exclude edges (LR communication scores between a 
+        given cell pair) that are expressed due to various thresholds. If these LR pairs received
+        a non-zero score for another cell pair, when restructuring into a matrix, the excluded edges will results in a NaN
+        value. One may want to instead treat these as a communication score of 0, rather than missing (i.e., NaN).
 
     Returns
     -------
     cm : pd.DataFrame
-        communication matrix with columns as (Sender-Receiver) cell pairs and rows as (Ligand&Receptor) gene pairs
+        communication matrix with columns as (Sender-Receiver) cell pairs and rows as (Ligand^Receptor) gene pairs
     """
     
     cm = edge_list.copy()
@@ -346,4 +355,11 @@ def edgelist_to_communication_matrix(edge_list: pd.DataFrame,
     cm = cm.loc[:, [cell_delim.join(['Sender', 'Receiver']), lr_delim.join(['Ligand', 'Receptor']), score_col]] 
                      
     cm = cm.pivot(index = cell_delim.join(['Sender', 'Receiver']), columns = lr_delim.join(['Ligand', 'Receptor']), values=score_col).T
+    if fillna_val is not None:
+        if cm.isna().all(axis=0).any():
+            msg = 'Dataset contains LR pairs that are scored NA for all cell pairs. '
+            msg += 'You may want to consider dropping these LR pairs rather than filling NA'
+            warnings.warn(msg)
+
+        cm.fillna(value = fillna_val, inplace = True)
     return cm
