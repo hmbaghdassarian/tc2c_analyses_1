@@ -213,7 +213,7 @@ def get_cells_and_lrs(df_list: List, lr_how: str = 'outer', cell_how: str ='oute
 def matrix_to_interaction_tensor(scores: Dict[str, pd.DataFrame], 
                                  cell_delim: str = '-', lr_delim: str = '&', 
                                 lr_how: str = 'outer', lr_fill: float = float('nan'),
-                                cell_how: str = 'outer', cell_fill: float =0,
+                                cell_how: str = 'outer', cell_fill: float = 0,
                                 prioritize_lr_fill: bool = True):
     """Combine communication matrices from multiple contexts into an interaction tensor.
     
@@ -283,7 +283,7 @@ def matrix_to_interaction_tensor(scores: Dict[str, pd.DataFrame],
 
     return tensor
 
-def edgelist_to_communication_matrix(edge_file: str, 
+def edgelist_to_communication_matrix(edge_list: pd.DataFrame, 
                                      score_col: str, 
                                      sender_cell_col: str, receiver_cell_col: str,
                                      ligand_col: str, receptor_col: str,
@@ -292,8 +292,7 @@ def edgelist_to_communication_matrix(edge_file: str,
 
     Parameters
     ----------
-    edge_file : str
-        full/path/to/edgelist.csv
+    edge_list : pd.DataFrame
         edge list should contain a communication score for each cell-cell and each LR pair
     score_col : str
         name of column containing communication scores
@@ -316,28 +315,10 @@ def edgelist_to_communication_matrix(edge_file: str,
         communication matrix with columns as (Sender-Receiver) cell pairs and rows as (Ligand&Receptor) gene pairs
     """
     
-    cm = pd.read_csv(edge_file)
-    cm[cell_delim.join(['Sender, Receiver'])] = cm[[sender_cell_col, receiver_cell_col]].agg(cell_delim.join, axis=1)
-    cm[lr_delim.join(['Ligand, Receptor'])] = cm[[ligand_col, receptor_col]].agg(lr_delim.join, axis=1)
-    cm = cm.loc[:, [cell_delim.join(['Sender, Receiver']), lr_delim.join(['Ligand, Receptor']), score_col]] 
+    cm = edge_list.copy()
+    cm[cell_delim.join(['Sender', 'Receiver'])] = cm[[sender_cell_col, receiver_cell_col]].agg(cell_delim.join, axis=1)
+    cm[lr_delim.join(['Ligand', 'Receptor'])] = cm[[ligand_col, receptor_col]].agg(lr_delim.join, axis=1)
+    cm = cm.loc[:, [cell_delim.join(['Sender', 'Receiver']), lr_delim.join(['Ligand', 'Receptor']), score_col]] 
                      
-    cm = cm.pivot(index = cell_delim.join(['Sender, Receiver']), columns = lr_delim.join(['Ligand, Receptor']), values=score_col).T
-    return cm
-    
-def natmi_edgelist_to_communication_matrix(edge_file: str, cell_delim: str = '-', lr_delim: str = '&', 
-                                           score_col: str = 'Edge average expression weight'):
-    """Converts Edges_xx.csv output to communication matrix format.
-     
-    See edgelist_to_communication_matrix for full description of parameters
-    """
-    cm = edgelist_to_communication_matrix(edge_file=edge_file, 
-                                          score_col=score_col,
-                                         sender_cell_col='Sending cluster', receiver_cell_col='Target cluster',
-                                          ligand_col='Ligand symbol', receptor_col='Receptor symbol', 
-                                          cell_delim=cell_delim, lr_delim=lr_delim
-                                         )
-    cm.dropna(axis = 1, how = 'all', inplace = True) # if a cell type was not measured
-    cm.dropna(axis = 0, how = 'all', inplace = True) # if an LR was not measured
-    cm.fillna(0, inplace = True) # all other missing values were scored 0
-    
+    cm = cm.pivot(index = cell_delim.join(['Sender', 'Receiver']), columns = lr_delim.join(['Ligand', 'Receptor']), values=score_col).T
     return cm
